@@ -1,144 +1,171 @@
 <script>
-  // --- simple topic filter tags ---
+  // ------- basic UI state -------
   const TOPICS = ["All","Physics","Math","Biology","Chemistry","Astronomy","History","Philosophy","Engineering"];
   let activeTopic = "All";
-  const filtersEl = document.getElementById("filters") || (() => {
-    const d = document.createElement("div"); d.id="filters"; d.className="filters"; 
-    document.querySelector(".toolbar").appendChild(d); return d; })();
+  const feed    = document.getElementById("feed");
+  const moreBtn = document.getElementById("moreBtn");
+  const filters = document.getElementById("filters");
+  const seenIds = new Set(); // use pageid, not title
 
-  // build pills
+  // Build pills
   TOPICS.forEach(t => {
     const b = document.createElement("button");
-    b.className = "pill" + (t === activeTopic ? " active" : "");
+    b.className = "pill" + (t===activeTopic ? " active":"");
     b.textContent = t;
     b.onclick = () => {
       activeTopic = t;
-      [...filtersEl.children].forEach(x => x.classList.remove("active"));
+      [...filters.children].forEach(x => x.classList.remove("active"));
       b.classList.add("active");
     };
-    filtersEl.appendChild(b);
+    filters.appendChild(b);
   });
 
-  const feed   = document.getElementById("feed");
-  const moreBtn= document.getElementById("moreBtn");
-  let loading  = false;
-  const seen   = new Set(); // avoid repeats by title
+  // ------- helpers -------
+  const SPORTS = ["football","soccer","basketball","baseball","cricket","hockey","rugby","tennis","olympics","athlete","tournament","coach"];
+  function isSportsLike(s=""){ s=s.toLowerCase(); return SPORTS.some(k=>s.includes(k)); }
 
-  // --- helpers ---
-  function isSportsLike(text="") {
-    const s = text.toLowerCase();
-    return ["football","soccer","basketball","baseball","cricket","hockey",
-            "rugby","tennis","olympics","athlete","coach","tournament"].some(k => s.includes(k));
-  }
+  // Action API (returns many pages at once)
+  async function fetchCategoryBatch(catTitle, batch=40) {
+    // generator=categorymembers returns pages + lets us request extracts & thumbnails in the same response
+    const url = new URL("https://en.wikipedia.org/w/api.php");
+    url.searchParams.set("origin","*"); // CORS
+    url.searchParams.set("format","json");
+    url.searchParams.set("action","query");
+    url.searchParams.set("generator","categorymembers");
+    url.searchParams.set("gcmtitle", catTitle);         // e.g., Category:Physics
+    url.searchParams.set("gcmtype","page");
+    url.searchParams.set("gcmlimit", String(Math.min(batch, 50))); // API cap for anon is ~50
+    url.searchParams.set("prop","extracts|pageimages|info");
+    url.searchParams.set("exintro","1");    // only lead section
+    url.searchParams.set("explaintext","1");// plain text
+    url.searchParams.set("inprop","url");   // fullurl
+    url.searchParams.set("pithumbsize","800");
 
-  function matchesTopic(article, topic) {
-    if (topic === "All") return true;
-    const t = (article.description || "") + " " + (article.extract || "") + " " + (article.title || "");
-    const s = t.toLowerCase();
-    const map = {
-      physics:     ["physics","quantum","relativity","particle","thermodynamics","optics","mechanics","cosmology","astrophysics","wave"],
-      math:        ["mathematics","mathematician","algebra","calculus","geometry","topology","number theory","probability","statistics"],
-      biology:     ["biology","biologist","evolution","genetics","cell","ecology","organism","neuroscience","biochemistry"],
-      chemistry:   ["chemistry","chemist","molecule","reaction","organic","inorganic","analytical","stoichiometry","spectroscopy"],
-      astronomy:   ["astronomy","astronomer","galaxy","star","planet","nebula","supernova","telescope","exoplanet"],
-      history:     ["history","ancient","medieval","empire","revolution","war","dynasty","archaeology","historian","treaty"],
-      philosophy:  ["philosophy","philosopher","ethics","metaphysics","epistemology","logic","stoicism","phenomenology"],
-      engineering: ["engineering","engineer","mechanical","electrical","civil","aerospace","software","materials","control"]
-    };
-    return (map[topic.toLowerCase()] || []).some(k => s.includes(k));
-  }
-
-  async function getRandomSummary() {
-    const r = await fetch("https://en.wikipedia.org/api/rest_v1/page/random/summary", { cache: "no-store" });
+    const r = await fetch(url, { cache: "no-store" });
     if (!r.ok) throw new Error("HTTP " + r.status);
-    return r.json();
+    const data = await r.json();
+    const pages = data?.query?.pages ? Object.values(data.query.pages) : [];
+    // shuffle so we don’t always hit the same few
+    for (let i = pages.length - 1; i > 0; i--) { const j = Math.floor(Math.random()*(i+1)); [pages[i],pages[j]]=[pages[j],pages[i]]; }
+    return pages;
   }
 
-  // Fetch N in parallel, filter, return first usable one (or null)
-  async function fetchBatchFiltered(batchSize = 10) {
-    // parallel requests
-    const promises = Array.from({ length: batchSize }, () => getRandomSummary().catch(() => null));
-    const results  = (await Promise.all(promises)).filter(Boolean);
-
-    // filter out sports, duplicates, and off-topic
-    const filtered = results.filter(a => {
-      if (!a || !a.title) return false;
-      const blob = `${a.title} ${a.description || ""} ${a.extract || ""}`;
-      if (isSportsLike(blob)) return false;
-      if (!matchesTopic(a, activeTopic)) return false;
-      if (seen.has(a.title)) return false;
-      return true;
-    });
-
-    return filtered.length ? filtered[0] : null;
+  async function fetchRandomBatch(batch=20) {
+    // true random summaries (parallel)
+    const tasks = Array.from({length:batch}, () =>
+      fetch("https://en.wikipedia.org/api/rest_v1/page/random/summary", { cache:"no-store" })
+        .then(r => r.ok ? r.json() : null)
+        .catch(()=>null)
+    );
+    return (await Promise.all(tasks)).filter(Boolean);
   }
 
-  function addCard(article) {
-    seen.add(article.title);
+  function pickFirstAcceptable(items) {
+    for (const a of items) {
+      const id   = a.pageid ?? a.id ?? null;
+      const text = `${a.title||""} ${a.description||""} ${a.extract||""}`;
+      if (!id) continue;
+      if (seenIds.has(id)) continue;
+      if (!a.extract || a.extract.length < 40) continue; // avoid stubs
+      if (isSportsLike(text)) continue;
+      return a;
+    }
+    return null;
+  }
+
+  function renderCard(a) {
+    seenIds.add(a.pageid ?? a.id);
     const card = document.createElement("div");
     card.className = "card";
-
-    if (article.thumbnail?.source) {
+    if (a.thumbnail?.source) {
       const img = document.createElement("img");
-      img.src = article.thumbnail.source;
-      img.alt = article.title;
+      img.src = a.thumbnail.source;
+      img.alt = a.title;
       card.appendChild(img);
     }
-
-    const c = document.createElement("div");
-    c.className = "content";
-    const h = document.createElement("h2"); h.className = "title"; h.textContent = article.title; c.appendChild(h);
-    const p = document.createElement("p"); p.className = "extract"; p.textContent = article.extract || ""; c.appendChild(p);
-    const a = document.createElement("a"); a.className = "link";
-    a.href = article.content_urls?.desktop?.page || "#"; a.target = "_blank"; a.rel="noopener";
-    a.textContent = "Read on Wikipedia →";
-    c.appendChild(a);
-
+    const c = document.createElement("div"); c.className = "content";
+    const h = document.createElement("h2"); h.className = "title"; h.textContent = a.title; c.appendChild(h);
+    const p = document.createElement("p"); p.className = "extract"; p.textContent = a.extract || ""; c.appendChild(p);
+    const link = document.createElement("a");
+    link.className = "link";
+    link.href = a.fullurl || a.content_urls?.desktop?.page || "#";
+    link.target = "_blank"; link.rel = "noopener";
+    link.textContent = "Read on Wikipedia →";
+    c.appendChild(link);
     card.appendChild(c);
     feed.insertBefore(card, feed.firstChild);
   }
 
-  async function fetchArticle() {
-    if (loading) return;
-    loading = true;
+  async function getOneArticle() {
+    if (activeTopic === "All") {
+      const batch = await fetchRandomBatch(18);
+      return pickFirstAcceptable(batch);
+    }
+
+    // Map simple topics to one solid category
+    const CAT = {
+      Physics:    "Category:Physics",
+      Math:       "Category:Mathematics",
+      Biology:    "Category:Biology",
+      Chemistry:  "Category:Chemistry",
+      Astronomy:  "Category:Astronomy",
+      History:    "Category:History",
+      Philosophy: "Category:Philosophy",
+      Engineering:"Category:Engineering"
+    }[activeTopic];
+
+    // First try the main category
+    let pages = await fetchCategoryBatch(CAT, 40);
+    let pick = pickFirstAcceptable(pages);
+    if (pick) return pick;
+
+    // Fallback: try a closely related subcategory (just one hop so it stays simple)
+    const SUB = {
+      Physics: "Category:Physical_sciences",
+      Math: "Category:Mathematical_concepts",
+      Biology: "Category:Biological_concepts",
+      Chemistry: "Category:Chemical_compounds",
+      Astronomy: "Category:Astrophysics",
+      History: "Category:Historical_events",
+      Philosophy: "Category:Ethics",
+      Engineering: "Category:Mechanical_engineering"
+    }[activeTopic];
+
+    if (SUB) {
+      pages = await fetchCategoryBatch(SUB, 40);
+      pick = pickFirstAcceptable(pages);
+    }
+    return pick;
+  }
+
+  async function fetchAndShow() {
     moreBtn.disabled = true; moreBtn.textContent = "Loading...";
-
     try {
-      // Try a bigger batch first; if none, widen search once
-      let pick = await fetchBatchFiltered(12);
-      if (!pick && activeTopic !== "All") {
-        // fallback: try again with a larger batch before giving up
-        pick = await fetchBatchFiltered(20);
-      }
-
-      if (pick) {
-        addCard(pick);
-      } else {
-        // user feedback, but keep things snappy
+      const a = await getOneArticle();
+      if (a) renderCard(a);
+      else {
         const note = document.createElement("div");
         note.className = "card";
-        note.innerHTML = `<div class="content"><p class="extract">No fresh articles matched “${activeTopic}”. Try again or switch topics.</p></div>`;
+        note.innerHTML = `<div class="content"><p class="extract">Couldn’t find a fresh “${activeTopic}” article right now. Try again.</p></div>`;
         feed.insertBefore(note, feed.firstChild);
       }
     } catch (e) {
       console.error(e);
-      alert("Could not fetch articles right now. Please try again.");
+      alert("Network hiccup. Try again.");
     } finally {
-      loading = false;
       moreBtn.disabled = false; moreBtn.textContent = "Get another article";
     }
   }
 
-  // wire up UI
-  moreBtn.addEventListener("click", fetchArticle);
-  fetchArticle(); // initial
+  // wire up
+  moreBtn.addEventListener("click", fetchAndShow);
+  fetchAndShow(); // initial
   // gentle infinite scroll
   let ticking = false;
   window.addEventListener("scroll", () => {
-    if (ticking) return;
-    ticking = true;
+    if (ticking) return; ticking = true;
     requestAnimationFrame(() => {
-      if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 250) fetchArticle();
+      if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 250) fetchAndShow();
       ticking = false;
     });
   });
