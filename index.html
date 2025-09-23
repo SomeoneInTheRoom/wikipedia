@@ -23,8 +23,18 @@
     .pill { padding: 6px 10px; border-radius: 999px; border: 1px solid #ddd; background: #fff; cursor: pointer; }
     .pill.active { border-color: #000; }
     .footer { text-align: center; color: #777; font-size: 12px; margin-top: 22px; }
+    .toast {
+              position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+              background: rgba(0,0,0,.85); color: #fff; padding: 10px 14px;
+              border-radius: 10px; font-size: 14px; opacity: 0; pointer-events: none;
+              transition: opacity .25s ease;
+            }
+    .toast.show { opacity: 1; }
+    .actions { display:flex; gap:8px; margin-top:10px; }
+    .actions button { font-size: 13px; padding: 6px 10px; }
   </style>
 </head>
+<div id="toast" class="toast">Copied!</div>
 <body>
   <div class="wrap">
     <h1>WikiScroll</h1>
@@ -115,29 +125,91 @@
       }
       return null;
     }
-
-    function renderCard(a) {
-      seenIds.add(a.pageid ?? a.id);
-      const card = document.createElement("div");
-      card.className = "card";
-      if (a.thumbnail?.source) {
-        const img = document.createElement("img");
-        img.src = a.thumbnail.source;
-        img.alt = a.title;
-        card.appendChild(img);
-      }
-      const c = document.createElement("div"); c.className = "content";
-      const h = document.createElement("h2"); h.className = "title"; h.textContent = a.title; c.appendChild(h);
-      const p = document.createElement("p"); p.className = "extract"; p.textContent = a.extract || ""; c.appendChild(p);
-      const link = document.createElement("a");
-      link.className = "link";
-      link.href = a.fullurl || a.content_urls?.desktop?.page || "#";
-      link.target = "_blank"; link.rel = "noopener";
-      link.textContent = "Read on Wikipedia →";
-      c.appendChild(link);
-      card.appendChild(c);
-      feed.insertBefore(card, feed.firstChild);
+    function showToast(msg="Copied!") {
+      const t = document.getElementById("toast");
+      t.textContent = msg;
+      t.classList.add("show");
+      setTimeout(() => t.classList.remove("show"), 1200);
     }
+    function buildChatPrompt(article, topicLabel) {
+      const url = article.fullurl || (article.content_urls?.desktop?.page ?? "");
+      const title = article.title || "this topic";
+      const summary = (article.extract || "").slice(0, 600); // keep it short
+      const topic = topicLabel && topicLabel !== "All" ? ` (${topicLabel})` : "";
+      return [
+        `Explain **${title}**${topic} in a way that’s accurate and concise.`,
+        `Base your answer on this Wikipedia article: ${url}`,
+        ``,
+        `Constraints:`,
+        `- Start with a 3–4 sentence overview; define any essential terms.`,
+        `- Give the 5 most important facts or mechanisms, cleanly separated.`,
+        `- Add context: why it matters historically or scientifically.`,
+        `- If relevant, include key equations with one-line interpretations.`,
+        `- Common misconceptions to avoid (2–3 bullets).`,
+        `- End with: 3 comprehension checks and 5 flashcards (Q → A).`,
+        ``,
+        `Wikipedia summary for quick reference (may be incomplete):`,
+        summary
+      ].join("\n");
+    }
+function renderCard(a) {
+  seenIds.add(a.pageid ?? a.id);
+  const card = document.createElement("div");
+  card.className = "card";
+
+  if (a.thumbnail?.source) {
+    const img = document.createElement("img");
+    img.src = a.thumbnail.source;
+    img.alt = a.title;
+    card.appendChild(img);
+  }
+
+  const c = document.createElement("div"); c.className = "content";
+  const h = document.createElement("h2"); h.className = "title"; h.textContent = a.title; c.appendChild(h);
+  const p = document.createElement("p"); p.className = "extract"; p.textContent = a.extract || ""; c.appendChild(p);
+
+  // link row
+  const link = document.createElement("a");
+  link.className = "link";
+  link.href = a.fullurl || a.content_urls?.desktop?.page || "#";
+  link.target = "_blank"; link.rel = "noopener";
+  link.textContent = "Read on Wikipedia →";
+  c.appendChild(link);
+
+  // actions row (visible button)
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  const copyBtn = document.createElement("button");
+  copyBtn.textContent = "Copy chat prompt";
+  copyBtn.onclick = async () => {
+    const prompt = buildChatPrompt(a, activeTopic);
+    try {
+      await navigator.clipboard.writeText(prompt);
+      showToast("Chat prompt copied");
+    } catch {
+      // fallback: open a prompt window if clipboard is blocked
+      window.prompt("Copy this prompt:", prompt);
+    }
+  };
+  actions.appendChild(copyBtn);
+  c.appendChild(actions);
+
+  card.appendChild(c);
+
+  // Right-click anywhere on the card to copy the prompt
+  card.addEventListener("contextmenu", async (ev) => {
+    ev.preventDefault();
+    const prompt = buildChatPrompt(a, activeTopic);
+    try {
+      await navigator.clipboard.writeText(prompt);
+      showToast("Chat prompt copied");
+    } catch {
+      window.prompt("Copy this prompt:", prompt);
+    }
+  });
+
+  feed.insertBefore(card, feed.firstChild);
+}    }
 
     function mainCategoryFor(topic) {
       return {
