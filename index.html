@@ -1,172 +1,221 @@
-<script>
-  // ------- basic UI state -------
-  const TOPICS = ["All","Physics","Math","Biology","Chemistry","Astronomy","History","Philosophy","Engineering"];
-  let activeTopic = "All";
-  const feed    = document.getElementById("feed");
-  const moreBtn = document.getElementById("moreBtn");
-  const filters = document.getElementById("filters");
-  const seenIds = new Set(); // use pageid, not title
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WikiScroll</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; background: #f7f7f8; }
+    .wrap { max-width: 760px; margin: 0 auto; padding: 24px; }
+    h1 { margin: 0 0 6px; }
+    .sub { color: #555; margin: 0 0 18px; }
+    .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+    button { padding: 10px 14px; border-radius: 10px; border: 1px solid #ddd; background: white; cursor: pointer; }
+    button:disabled { opacity: 0.6; cursor: default; }
+    .feed { display: grid; gap: 16px; }
+    .card { background: white; border: 1px solid #e6e6e6; border-radius: 14px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+    .card img { width: 100%; height: 240px; object-fit: cover; display: block; }
+    .content { padding: 14px 16px 16px; }
+    .title { font-weight: 600; margin: 0 0 8px; }
+    .extract { color: #333; line-height: 1.45; margin: 0 0 10px; }
+    .link { color: #2563eb; text-decoration: none; }
+    .filters { display: flex; gap: 8px; flex-wrap: wrap; }
+    .pill { padding: 6px 10px; border-radius: 999px; border: 1px solid #ddd; background: #fff; cursor: pointer; }
+    .pill.active { border-color: #000; }
+    .footer { text-align: center; color: #777; font-size: 12px; margin-top: 22px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>WikiScroll</h1>
+    <p class="sub">A fun, scrollable stream of science & history from Wikipedia.</p>
 
-  // Build pills
-  TOPICS.forEach(t => {
-    const b = document.createElement("button");
-    b.className = "pill" + (t===activeTopic ? " active":"");
-    b.textContent = t;
-    b.onclick = () => {
-      activeTopic = t;
-      [...filters.children].forEach(x => x.classList.remove("active"));
-      b.classList.add("active");
-    };
-    filters.appendChild(b);
-  });
+    <div class="toolbar">
+      <button id="moreBtn">Get another article</button>
+      <div class="filters" id="filters"></div>
+    </div>
 
-  // ------- helpers -------
-  const SPORTS = ["football","soccer","basketball","baseball","cricket","hockey","rugby","tennis","olympics","athlete","tournament","coach"];
-  function isSportsLike(s=""){ s=s.toLowerCase(); return SPORTS.some(k=>s.includes(k)); }
+    <div class="feed" id="feed"></div>
+    <p class="footer">Content from Wikipedia via the MediaWiki APIs. Sports content filtered out.</p>
+  </div>
 
-  // Action API (returns many pages at once)
-  async function fetchCategoryBatch(catTitle, batch=40) {
-    // generator=categorymembers returns pages + lets us request extracts & thumbnails in the same response
-    const url = new URL("https://en.wikipedia.org/w/api.php");
-    url.searchParams.set("origin","*"); // CORS
-    url.searchParams.set("format","json");
-    url.searchParams.set("action","query");
-    url.searchParams.set("generator","categorymembers");
-    url.searchParams.set("gcmtitle", catTitle);         // e.g., Category:Physics
-    url.searchParams.set("gcmtype","page");
-    url.searchParams.set("gcmlimit", String(Math.min(batch, 50))); // API cap for anon is ~50
-    url.searchParams.set("prop","extracts|pageimages|info");
-    url.searchParams.set("exintro","1");    // only lead section
-    url.searchParams.set("explaintext","1");// plain text
-    url.searchParams.set("inprop","url");   // fullurl
-    url.searchParams.set("pithumbsize","800");
+  <script>
+    // ------- basic UI state -------
+    const TOPICS = ["All","Physics","Math","Biology","Chemistry","Astronomy","History","Philosophy","Engineering"];
+    let activeTopic = "All";
+    const feed    = document.getElementById("feed");
+    const moreBtn = document.getElementById("moreBtn");
+    const filters = document.getElementById("filters");
+    const seenIds = new Set(); // use pageid, not title
 
-    const r = await fetch(url, { cache: "no-store" });
-    if (!r.ok) throw new Error("HTTP " + r.status);
-    const data = await r.json();
-    const pages = data?.query?.pages ? Object.values(data.query.pages) : [];
-    // shuffle so we don’t always hit the same few
-    for (let i = pages.length - 1; i > 0; i--) { const j = Math.floor(Math.random()*(i+1)); [pages[i],pages[j]]=[pages[j],pages[i]]; }
-    return pages;
-  }
+    // Build pills
+    TOPICS.forEach(t => {
+      const b = document.createElement("button");
+      b.className = "pill" + (t===activeTopic ? " active":"");
+      b.textContent = t;
+      b.onclick = () => {
+        activeTopic = t;
+        [...filters.children].forEach(x => x.classList.remove("active"));
+        b.classList.add("active");
+      };
+      filters.appendChild(b);
+    });
 
-  async function fetchRandomBatch(batch=20) {
-    // true random summaries (parallel)
-    const tasks = Array.from({length:batch}, () =>
-      fetch("https://en.wikipedia.org/api/rest_v1/page/random/summary", { cache:"no-store" })
-        .then(r => r.ok ? r.json() : null)
-        .catch(()=>null)
-    );
-    return (await Promise.all(tasks)).filter(Boolean);
-  }
+    // ------- helpers -------
+    const SPORTS = ["football","soccer","basketball","baseball","cricket","hockey","rugby","tennis","olympics","athlete","tournament","coach"];
+    function isSportsLike(s=""){ s=s.toLowerCase(); return SPORTS.some(k=>s.includes(k)); }
 
-  function pickFirstAcceptable(items) {
-    for (const a of items) {
-      const id   = a.pageid ?? a.id ?? null;
-      const text = `${a.title||""} ${a.description||""} ${a.extract||""}`;
-      if (!id) continue;
-      if (seenIds.has(id)) continue;
-      if (!a.extract || a.extract.length < 40) continue; // avoid stubs
-      if (isSportsLike(text)) continue;
-      return a;
-    }
-    return null;
-  }
-
-  function renderCard(a) {
-    seenIds.add(a.pageid ?? a.id);
-    const card = document.createElement("div");
-    card.className = "card";
-    if (a.thumbnail?.source) {
-      const img = document.createElement("img");
-      img.src = a.thumbnail.source;
-      img.alt = a.title;
-      card.appendChild(img);
-    }
-    const c = document.createElement("div"); c.className = "content";
-    const h = document.createElement("h2"); h.className = "title"; h.textContent = a.title; c.appendChild(h);
-    const p = document.createElement("p"); p.className = "extract"; p.textContent = a.extract || ""; c.appendChild(p);
-    const link = document.createElement("a");
-    link.className = "link";
-    link.href = a.fullurl || a.content_urls?.desktop?.page || "#";
-    link.target = "_blank"; link.rel = "noopener";
-    link.textContent = "Read on Wikipedia →";
-    c.appendChild(link);
-    card.appendChild(c);
-    feed.insertBefore(card, feed.firstChild);
-  }
-
-  async function getOneArticle() {
-    if (activeTopic === "All") {
-      const batch = await fetchRandomBatch(18);
-      return pickFirstAcceptable(batch);
+    async function fetchJSON(url) {
+      const r = await fetch(url, { cache: "no-store" });
+      if (!r.ok) throw new Error("HTTP " + r.status + " for " + url);
+      return r.json();
     }
 
-    // Map simple topics to one solid category
-    const CAT = {
-      Physics:    "Category:Physics",
-      Math:       "Category:Mathematics",
-      Biology:    "Category:Biology",
-      Chemistry:  "Category:Chemistry",
-      Astronomy:  "Category:Astronomy",
-      History:    "Category:History",
-      Philosophy: "Category:Philosophy",
-      Engineering:"Category:Engineering"
-    }[activeTopic];
+    // Pull many pages at once **from a category** including extract+thumbnail+fullurl
+    async function fetchCategoryBatch(catTitle, batch=40) {
+      const url = new URL("https://en.wikipedia.org/w/api.php");
+      url.searchParams.set("origin","*"); // CORS
+      url.searchParams.set("format","json");
+      url.searchParams.set("action","query");
+      url.searchParams.set("generator","categorymembers");
+      url.searchParams.set("gcmtitle", catTitle);         // e.g., Category:Physics
+      url.searchParams.set("gcmtype","page");
+      url.searchParams.set("gcmlimit", String(Math.min(batch, 50)));
+      url.searchParams.set("prop","extracts|pageimages|info");
+      url.searchParams.set("exintro","1");
+      url.searchParams.set("explaintext","1");
+      url.searchParams.set("inprop","url");
+      url.searchParams.set("pithumbsize","800");
 
-    // First try the main category
-    let pages = await fetchCategoryBatch(CAT, 40);
-    let pick = pickFirstAcceptable(pages);
-    if (pick) return pick;
-
-    // Fallback: try a closely related subcategory (just one hop so it stays simple)
-    const SUB = {
-      Physics: "Category:Physical_sciences",
-      Math: "Category:Mathematical_concepts",
-      Biology: "Category:Biological_concepts",
-      Chemistry: "Category:Chemical_compounds",
-      Astronomy: "Category:Astrophysics",
-      History: "Category:Historical_events",
-      Philosophy: "Category:Ethics",
-      Engineering: "Category:Mechanical_engineering"
-    }[activeTopic];
-
-    if (SUB) {
-      pages = await fetchCategoryBatch(SUB, 40);
-      pick = pickFirstAcceptable(pages);
+      const data = await fetchJSON(url);
+      const pages = data?.query?.pages ? Object.values(data.query.pages) : [];
+      // shuffle
+      for (let i = pages.length - 1; i > 0; i--) { const j = Math.floor(Math.random()*(i+1)); [pages[i],pages[j]]=[pages[j],pages[i]]; }
+      return pages;
     }
-    return pick;
-  }
 
-  async function fetchAndShow() {
-    moreBtn.disabled = true; moreBtn.textContent = "Loading...";
-    try {
-      const a = await getOneArticle();
-      if (a) renderCard(a);
-      else {
+    async function fetchRandomBatch(batch=18) {
+      const tasks = Array.from({length:batch}, () =>
+        fetch("https://en.wikipedia.org/api/rest_v1/page/random/summary", { cache:"no-store" })
+          .then(r => r.ok ? r.json() : null)
+          .catch(()=>null)
+      );
+      return (await Promise.all(tasks)).filter(Boolean);
+    }
+
+    function pickFirstAcceptable(items) {
+      for (const a of items) {
+        const id   = a.pageid ?? a.id ?? null;
+        const text = `${a.title||""} ${a.description||""} ${a.extract||""}`;
+        if (!id) continue;
+        if (seenIds.has(id)) continue;
+        if (!a.extract || a.extract.length < 40) continue; // avoid stubs
+        if (isSportsLike(text)) continue;
+        return a;
+      }
+      return null;
+    }
+
+    function renderCard(a) {
+      seenIds.add(a.pageid ?? a.id);
+      const card = document.createElement("div");
+      card.className = "card";
+      if (a.thumbnail?.source) {
+        const img = document.createElement("img");
+        img.src = a.thumbnail.source;
+        img.alt = a.title;
+        card.appendChild(img);
+      }
+      const c = document.createElement("div"); c.className = "content";
+      const h = document.createElement("h2"); h.className = "title"; h.textContent = a.title; c.appendChild(h);
+      const p = document.createElement("p"); p.className = "extract"; p.textContent = a.extract || ""; c.appendChild(p);
+      const link = document.createElement("a");
+      link.className = "link";
+      link.href = a.fullurl || a.content_urls?.desktop?.page || "#";
+      link.target = "_blank"; link.rel = "noopener";
+      link.textContent = "Read on Wikipedia →";
+      c.appendChild(link);
+      card.appendChild(c);
+      feed.insertBefore(card, feed.firstChild);
+    }
+
+    function mainCategoryFor(topic) {
+      return {
+        Physics:    "Category:Physics",
+        Math:       "Category:Mathematics",
+        Biology:    "Category:Biology",
+        Chemistry:  "Category:Chemistry",
+        Astronomy:  "Category:Astronomy",
+        History:    "Category:History",
+        Philosophy: "Category:Philosophy",
+        Engineering:"Category:Engineering"
+      }[topic];
+    }
+    function fallbackCategoryFor(topic) {
+      return {
+        Physics: "Category:Physical_sciences",
+        Math: "Category:Mathematical_concepts",
+        Biology: "Category:Biological_concepts",
+        Chemistry: "Category:Chemical_compounds",
+        Astronomy: "Category:Astrophysics",
+        History: "Category:Historical_events",
+        Philosophy: "Category:Ethics",
+        Engineering: "Category:Mechanical_engineering"
+      }[topic];
+    }
+
+    async function getOneArticle() {
+      if (activeTopic === "All") {
+        const batch = await fetchRandomBatch(18);
+        return pickFirstAcceptable(batch);
+      }
+      const cat = mainCategoryFor(activeTopic);
+      let pages = cat ? await fetchCategoryBatch(cat, 40) : [];
+      let pick  = pickFirstAcceptable(pages);
+      if (pick) return pick;
+
+      const sub = fallbackCategoryFor(activeTopic);
+      if (sub) {
+        pages = await fetchCategoryBatch(sub, 40);
+        pick  = pickFirstAcceptable(pages);
+      }
+      return pick;
+    }
+
+    async function fetchAndShow() {
+      moreBtn.disabled = true; moreBtn.textContent = "Loading...";
+      try {
+        const a = await getOneArticle();
+        if (a) renderCard(a);
+        else {
+          const note = document.createElement("div");
+          note.className = "card";
+          note.innerHTML = `<div class="content"><p class="extract">Couldn’t find a fresh “${activeTopic}” article right now. Try again.</p></div>`;
+          feed.insertBefore(note, feed.firstChild);
+        }
+      } catch (e) {
+        console.error(e);
         const note = document.createElement("div");
         note.className = "card";
-        note.innerHTML = `<div class="content"><p class="extract">Couldn’t find a fresh “${activeTopic}” article right now. Try again.</p></div>`;
+        note.innerHTML = `<div class="content"><p class="extract">Network hiccup. Reload the page or try again.</p></div>`;
         feed.insertBefore(note, feed.firstChild);
+      } finally {
+        moreBtn.disabled = false; moreBtn.textContent = "Get another article";
       }
-    } catch (e) {
-      console.error(e);
-      alert("Network hiccup. Try again.");
-    } finally {
-      moreBtn.disabled = false; moreBtn.textContent = "Get another article";
     }
-  }
 
-  // wire up
-  moreBtn.addEventListener("click", fetchAndShow);
-  fetchAndShow(); // initial
-  // gentle infinite scroll
-  let ticking = false;
-  window.addEventListener("scroll", () => {
-    if (ticking) return; ticking = true;
-    requestAnimationFrame(() => {
-      if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 250) fetchAndShow();
-      ticking = false;
+    // wire up
+    moreBtn.addEventListener("click", fetchAndShow);
+    fetchAndShow(); // initial
+    // gentle infinite scroll
+    let ticking = false;
+    window.addEventListener("scroll", () => {
+      if (ticking) return; ticking = true;
+      requestAnimationFrame(() => {
+        if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 250) fetchAndShow();
+        ticking = false;
+      });
     });
-  });
-</script>
+  </script>
+</body>
+</html>
