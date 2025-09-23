@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WikiScroll</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; background: #f7f7f8; }
+    .wrap { max-width: 760px; margin: 0 auto; padding: 24px; }
+    h1 { margin: 0 0 6px; }
+    .sub { color: #555; margin: 0 0 18px; }
+    .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; }
+    button { padding: 10px 14px; border-radius: 10px; border: 1px solid #ddd; background: white; cursor: pointer; }
+    button:disabled { opacity: 0.6; cursor: default; }
+    .feed { display: grid; gap: 16px; }
+    .card { background: white; border: 1px solid #e6e6e6; border-radius: 14px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+    .card img { width: 100%; height: 240px; object-fit: cover; display: block; }
+    .content { padding: 14px 16px 16px; }
+    .title { font-weight: 600; margin: 0 0 8px; }
+    .extract { color: #333; line-height: 1.45; margin: 0 0 10px; }
+    .link { color: #2563eb; text-decoration: none; }
+    .filters { display: flex; gap: 8px; flex-wrap: wrap; }
+    .pill { padding: 6px 10px; border-radius: 999px; border: 1px solid #ddd; background: #fff; cursor: pointer; }
+    .pill.active { border-color: #000; }
+    .footer { text-align: center; color: #777; font-size: 12px; margin-top: 22px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>WikiScroll</h1>
+    <p class="sub">A fun, scrollable stream of science & history from Wikipedia.</p>
+
+    <div class="toolbar">
+      <button id="moreBtn">Get another article</button>
+      <div class="filters" id="filters"></div>
+    </div>
+
+    <div class="feed" id="feed"></div>
+    <p class="footer">Content from Wikipedia via the REST API. Sports content filtered out.</p>
+  </div>
+
+  <script>
+    // Simple topical filters (client-side match on summary text)
+    const TOPICS = ["All", "Physics", "Math", "Biology", "Chemistry", "Astronomy", "History", "Philosophy", "Engineering"];
+    let activeTopic = "All";
+    const filtersEl = document.getElementById("filters");
+    TOPICS.forEach(t => {
+      const b = document.createElement("button");
+      b.className = "pill" + (t === activeTopic ? " active" : "");
+      b.textContent = t;
+      b.onclick = () => { activeTopic = t; [...filtersEl.children].forEach(x => x.classList.remove("active")); b.classList.add("active"); };
+      filtersEl.appendChild(b);
+    });
+
+    const feed = document.getElementById("feed");
+    const moreBtn = document.getElementById("moreBtn");
+    let loading = false;
+
+    async function getRandomSummary() {
+      const r = await fetch("https://en.wikipedia.org/api/rest_v1/page/random/summary");
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    }
+
+    function isSportsLike(text) {
+      const s = text.toLowerCase();
+      return ["football","soccer","basketball","baseball","cricket","hockey","rugby","tennis","olympics","athlete"].some(k => s.includes(k));
+    }
+
+    function matchesTopic(article, topic) {
+      if (topic === "All") return true;
+      const t = (article.description || "") + " " + (article.extract || "") + " " + (article.title || "");
+      const s = t.toLowerCase();
+      const map = {
+        "physics": ["physics","quantum","relativity","particle","thermodynamics","optics","mechanics","astronomy","cosmology"],
+        "math": ["mathematics","mathematician","algebra","calculus","geometry","topology","number theory","probability","statistics"],
+        "biology": ["biology","biologist","evolution","genetics","cell","ecology","organism","neuroscience"],
+        "chemistry": ["chemistry","chemist","molecule","reaction","organic","inorganic","analytical","physical chemistry"],
+        "astronomy": ["astronomy","astronomer","galaxy","star","planet","nebula","cosmology","telescope"],
+        "history": ["history","ancient","medieval","empire","revolution","war","dynasty","archaeology","historian"],
+        "philosophy": ["philosophy","philosopher","ethics","metaphysics","epistemology","logic","aesthetics"],
+        "engineering": ["engineering","engineer","mechanical","electrical","civil","aerospace","software","materials"]
+      };
+      const keys = map[topic.toLowerCase()] || [];
+      return keys.some(k => s.includes(k));
+    }
+
+    async function fetchArticle() {
+      if (loading) return;
+      loading = true;
+      moreBtn.disabled = true; moreBtn.textContent = "Loading...";
+      try {
+        // try a few times to avoid sports or off-topic
+        for (let i=0; i<6; i++) {
+          const data = await getRandomSummary();
+          const blob = (data.extract || "") + " " + (data.description || "");
+          if (isSportsLike(blob)) continue;
+          if (!matchesTopic(data, activeTopic)) continue;
+          addCard(data);
+          break;
+        }
+      } catch (e) {
+        console.error(e);
+        alert("Could not fetch article. Try again.");
+      } finally {
+        loading = false;
+        moreBtn.disabled = false; moreBtn.textContent = "Get another article";
+      }
+    }
+
+    function addCard(article) {
+      const card = document.createElement("div");
+      card.className = "card";
+
+      if (article.thumbnail && article.thumbnail.source) {
+        const img = document.createElement("img");
+        img.src = article.thumbnail.source;
+        img.alt = article.title;
+        card.appendChild(img);
+      }
+
+      const c = document.createElement("div");
+      c.className = "content";
+      const h = document.createElement("h2"); h.className = "title"; h.textContent = article.title; c.appendChild(h);
+      const p = document.createElement("p"); p.className = "extract"; p.textContent = article.extract || ""; c.appendChild(p);
+      const a = document.createElement("a"); a.className = "link"; a.href = article.content_urls?.desktop?.page || "#"; a.target = "_blank";
+      a.rel = "noopener"; a.textContent = "Read on Wikipedia →"; c.appendChild(a);
+      card.appendChild(c);
+
+      feed.insertBefore(card, feed.firstChild);
+    }
+
+    moreBtn.addEventListener("click", fetchArticle);
+    // initial load
+    fetchArticle();
+    // infinite scroll-ish: fetch when near bottom
+    window.addEventListener("scroll", () => {
+      if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 200) fetchArticle();
+    });
+  </script>
+</body>
+</html>
